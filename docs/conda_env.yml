@@ -15,6 +15,7 @@ dependencies:
   - dask-jobqueue>=0.3
   - defusedxml
   - h5py<3
+  - libgfortran5
   - lxml
   - matplotlib
   - numpy
