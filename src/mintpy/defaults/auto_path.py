@@ -23,9 +23,8 @@ mintpy.load.corFile         = ../merged/interferograms/*/filt*.cor
 mintpy.load.connCompFile    = ../merged/interferograms/*/filt*.unw.conncomp
 mintpy.load.intFile         = None
 
-mintpy.load.ionUnwFile      = ../ion/*/ion_cal/filt.ion
-mintpy.load.ionCorFile      = ../ion/*/ion_cal/raw_no_projection.cor
-mintpy.load.ionConnCompFile = None
+mintpy.load.ionFile          = ../ion_dates/*.ion
+mintpy.load.ionBurstRampFile = ../ion_burst_ramp_merged_dates/*.float
 
 mintpy.load.demFile         = ../merged/geom_reference/hgt.rdr
 mintpy.load.lookupYFile     = ../merged/geom_reference/lat.rdr

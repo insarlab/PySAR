@@ -25,6 +25,7 @@ from mintpy.objects import (
     DATA_TYPE_DICT,
     GEOMETRY_DSET_NAMES,
     IFGRAM_DSET_NAMES,
+    TIMESERIES_DSET_NAMES,
 )
 from mintpy.utils import attribute as attr, ptime, readfile, utils0 as ut
 
@@ -409,6 +410,397 @@ class ifgramDict:
             self.metadata['PLATFORM'] = self.platform
 
         return self.metadata
+
+
+########################################################################################
+class timeseriesDict:
+    """
+    timeseriesStack object for a set of InSAR acquisitions from the same platform and track.
+
+    Example:
+        from mintpy.objects.insarobj import timeseriesDict
+        datesDict = {('20160524'):acqObj1,
+                     ('20160524'):acqObj2,
+                     ('20160524'):acqObj3,
+                     ('20160530'):acqObj4,
+                     ...
+                     }
+        tsObj = timeseriesDict(datesDict=datesDict)
+        tsObj.write2hdf5(outputFile='timeseries.h5', box=(200,500,300,600))
+    """
+
+    def __init__(self, name='timeseries', datesDict=None, dsName0=TIMESERIES_DSET_NAMES[0]):
+        self.name = name
+        self.datesDict = datesDict
+        self.dsName0 = dsName0        #reference dataset name, unwrapPhase OR azimuthOffset OR rangeOffset
+
+    def get_size(self, box=None, xstep=1, ystep=1, geom_obj=None):
+        """Get size in 3D"""
+        num_date = len(self.datesDict)
+        acqObj = [v for v in self.datesDict.values()][0]
+        length, width = acqObj.get_size(family=self.dsName0)
+
+        # use the reference geometry obj size
+        # for low-reso ionosphere from isce2/topsStack
+        if geom_obj:
+            length, width = geom_obj.get_size()
+
+        # update due to subset
+        if box:
+            length, width = box[3] - box[1], box[2] - box[0]
+
+        # update due to multilook
+        length = length // ystep
+        width = width // xstep
+
+        return num_date, length, width
+
+    def get_date_list(self):
+        self.dateList = list(self.datesDict.keys())
+        return self.dateList
+
+    def get_dataset_list(self):
+        acqObj = [x for x in self.datesDict.values()][0]
+        dsetList = [x for x in acqObj.datasetDict.keys()]
+        return dsetList
+
+    def get_metadata(self):
+        acqObj = [v for v in self.datesDict.values()][0]
+        self.metadata = acqObj.get_metadata(family=self.dsName0)
+        return self.metadata
+
+    def get_dataset_data_type(self, dsName):
+        acqObj = [v for v in self.datesDict.values()][0]
+        dsFile = acqObj.datasetDict[dsName]
+        metadata = readfile.read_attribute(dsFile)
+        dataType = DATA_TYPE_DICT[metadata.get('DATA_TYPE', 'float32').lower()]
+        return dataType
+
+    def write2hdf5(self, outputFile='timeseries.h5', access_mode='w', box=None, xstep=1, ystep=1, mli_method='nearest',
+                   compression=None, extra_metadata=None, geom_obj=None):
+        """Save/write an timeseriesDict object into an HDF5 file with the structure defined in:
+
+        https://mintpy.readthedocs.io/en/latest/api/data_structure/#ifgramstack (Kai need to update the doc?)
+
+        Parameters: outputFile     - str, Name of the HDF5 file for the InSAR stack
+                    access_mode    - str, access mode of output File, e.g. w, r+
+                    box            - tuple, subset range in (x0, y0, x1, y1)
+                    x/ystep        - int, multilook number in x/y direction
+                    mli_method     - str, multilook method, nearest, mean or median
+                    compression    - str, HDF5 dataset compression method, None, lzf or gzip
+                    extra_metadata - dict, extra metadata to be added into output file
+                    geom_obj       - geometryDict object, size reference to determine the resizing operation.
+        Returns:    outputFile     - str, Name of the HDF5 file for the InSAR stack
+        """
+        print('-'*50)
+
+        # output directory
+        output_dir = os.path.dirname(outputFile)
+        if not os.path.isdir(output_dir):
+            os.makedirs(output_dir)
+            print(f'create directory: {output_dir}')
+
+        self.dates = sorted(self.get_date_list())                                  # Kai
+        self.dsNames = list(self.datesDict[self.dates[0]].datasetDict.keys())      # Kai
+        self.dsNames = [i for i in TIMESERIES_DSET_NAMES if i in self.dsNames]
+        maxDigit = max(len(i) for i in self.dsNames)
+        num_date, length, width = self.get_size(
+            box=box,
+            xstep=xstep,
+            ystep=ystep)
+
+        # check if resize is needed for a lower resolution stack, e.g. ionosphere from isce2/topsStack
+        resize2shape = None
+        if geom_obj and os.path.basename(outputFile).startswith('ion'):
+            # compare the original data size between ionosphere and geometry w/o subset/multilook
+            ion_size = self.get_size()[1:]
+            geom_size = geom_obj.get_size()
+            if ion_size != geom_size:
+                msg = 'lower resolution ionosphere file detected'
+                msg += f' --> resize from {ion_size} to {geom_size} via skimage.transform.resize ...'
+                print(msg)
+
+                # matrix shape for the original geometry size w/o subset/multilook
+                resize2shape = geom_size
+                # data size of the output HDF5 file w/ resize/subset/multilook
+                length, width = self.get_size(
+                    box=box,
+                    xstep=xstep,
+                    ystep=ystep,
+                    geom_obj=geom_obj)[1:]
+
+        # write HDF5 file
+        with h5py.File(outputFile, access_mode) as f:
+            print(f'create HDF5 file {outputFile} with {access_mode} mode')
+
+            ###############################
+            # 3D datasets containing unwrapPhase, magnitude, coherence, connectComponent, wrapPhase, etc.
+            for dsName in self.dsNames:
+                dsShape = (num_date, length, width)
+                dsDataType = np.float32
+                dsCompression = compression
+                if dsName in ['connectComponent']:
+                    dsDataType = np.int16
+                    dsCompression = 'lzf'
+                    mli_method = 'nearest'
+
+                print(('create dataset /{d:<{w}} of {t:<25} in size of {s}'
+                       ' with compression = {c}').format(d=dsName,
+                                                         w=maxDigit,
+                                                         t=str(dsDataType),
+                                                         s=dsShape,
+                                                         c=dsCompression))
+                ds = f.create_dataset(dsName,
+                                      shape=dsShape,
+                                      maxshape=(None, dsShape[1], dsShape[2]),
+                                      dtype=dsDataType,
+                                      chunks=True,
+                                      compression=dsCompression)
+
+                # set no-data value - printout msg
+                if dsName.endswith('OffsetVar'):
+                    print(f'set no-data value for {dsName} from 99 to NaN.')
+                    dsFile = self.datesDict[self.dates[0]].datasetDict[dsName]
+                    if dsFile.endswith('cov.bip'):
+                        print('convert variance to standard deviation.')
+
+                # msg
+                if xstep * ystep > 1:
+                    print(f'apply {xstep} x {ystep} multilooking/downsampling via {mli_method} ...')
+
+                prog_bar = ptime.progressBar(maxValue=num_date)
+                for i, date in enumerate(self.dates):
+                    prog_bar.update(i+1, suffix=f'{date[0]}')
+
+                    # read and/or resize
+                    acqObj = self.datesDict[date]
+                    data = acqObj.read(dsName,
+                                          box=box,
+                                          xstep=xstep,
+                                          ystep=ystep,
+                                          mli_method=mli_method,
+                                          resize2shape=resize2shape)[0]
+
+                    # write
+                    ds[i, :, :] = data
+
+                ds.attrs['MODIFICATION_TIME'] = str(time.time())
+                prog_bar.close()
+
+            ###############################
+            # 2D dataset containing reference and secondary dates of all dates
+            dsName = 'date'
+            dsDataType = np.string_
+            dsShape = (num_date, 2)
+            print('create dataset /{d:<{w}} of {t:<25} in size of {s}'.format(d=dsName,
+                                                                              w=maxDigit,
+                                                                              t=str(dsDataType),
+                                                                              s=dsShape))
+            data = np.array(self.dates, dtype=dsDataType)
+            f.create_dataset(dsName, data=data)
+
+            ###############################
+            # 1D dataset containing perpendicular baseline of all dates
+            if False: # Mute this since we don't have it when reading timeseries dataset
+                dsName = 'bperp'
+                dsDataType = np.float32
+                dsShape = (num_date,)
+                print('create dataset /{d:<{w}} of {t:<25} in size of {s}'.format(d=dsName,
+                                                                                  w=maxDigit,
+                                                                                  t=str(dsDataType),
+                                                                                  s=dsShape))
+                # get bperp
+                data = np.zeros(num_date, dtype=dsDataType)
+                for i in range(num_date):
+                    acqObj = self.datesDict[self.dates[i]]
+                    data[i] = acqObj.get_perp_baseline(family=self.dsName0)
+                # write
+                f.create_dataset(dsName, data=data)
+
+            ###############################
+            # 1D dataset containing bool value of dropping the interferograms or not
+            dsName = 'dropIfgram' # Kai: need to delete this?
+            dsDataType = np.bool_
+            dsShape = (num_date,)
+            print('create dataset /{d:<{w}} of {t:<25} in size of {s}'.format(d=dsName,
+                                                                              w=maxDigit,
+                                                                              t=str(dsDataType),
+                                                                              s=dsShape))
+            data = np.ones(dsShape, dtype=dsDataType)
+            f.create_dataset(dsName, data=data)
+
+            ###############################
+            # Attributes
+            # read metadata from original data file w/o resize/subset/multilook
+            meta = self.get_metadata()
+            if extra_metadata:
+                meta.update(extra_metadata)
+                print(f'add extra metadata: {extra_metadata}')
+
+            # update metadata due to resize
+            # for low resolution ionosphere from isce2/topsStack
+            if resize2shape:
+                print('update metadata due to resize')
+                meta = attr.update_attribute4resize(meta, resize2shape)
+
+            # update metadata due to subset
+            if box:
+                print('update metadata due to subset')
+                meta = attr.update_attribute4subset(meta, box)
+
+            # update metadata due to multilook
+            if xstep * ystep > 1:
+                print('update metadata due to multilook')
+                meta = attr.update_attribute4multilook(meta, ystep, xstep)
+
+            # write metadata to HDF5 file at the root level
+            meta['FILE_TYPE'] = self.name
+            for key, value in meta.items():
+                f.attrs[key] = value
+
+        print(f'Finished writing to {outputFile}')
+        return outputFile
+
+
+########################################################################################
+class timeseriesAcqDict:
+    """
+    Timeseries object for timeseries, date, bperp, ... from the same platform and track.
+
+    Example:
+        from mintpy.utils import readfile
+        from mintpy.utils.insarobj import timeseriesAcqDict
+        datasetDict = {'timeseries'    :'$PROJECT_DIR/ion/*.rdr',
+                       'date'          :'$PROJECT_DIR/',
+                       'bperp'         :bperpDict
+                       ...
+                      }
+        bperpDict = {'20160406':'$PROJECT_DIR/merged/baselines/20160406/bperp',
+                     '20160418':'$PROJECT_DIR/merged/baselines/20160418/bperp',
+                     ...
+                    }
+        metadata = readfile.read_attribute('$PROJECT_DIR/merged/interferograms/20160629_20160723/filt_fine.unw')
+        acqObj = timeseriesAcqDict(processor='isce', datasetDict=datasetDict, extraMetadata=metadata)
+    """
+
+    def __init__(self, name='timeseries', datasetDict={}, metadata=None):
+        self.name = name
+        self.datasetDict = datasetDict
+
+        self.platform = None
+        self.track = None
+        self.processor = None
+        # platform, track and processor can get values from metadata if they exist
+        if metadata is not None:
+            for key, value in metadata.items():
+                setattr(self, key, value)
+
+    def read(self, family, box=None, xstep=1, ystep=1, mli_method='nearest', resize2shape=None):
+        """Read data for the given dataset name.
+
+        Parameters: self         - ifgramDict object
+                    family       - str, dataset name
+                    box          -  tuple of 4 int, in (x0, y0, x1, y1) with respect to the full resolution
+                    x/ystep      - int, number of pixels to skip, with respect to the full resolution
+                    mli_method   - str, interpolation method, nearest, mean, median
+                    resize2shape - tuple of 2 int, resize the native matrix to the given shape
+                                   Set to None for not resizing
+        Returns:    data         - 2D np.ndarray
+                    meta         - dict, metadata
+        """
+        self.file = self.datasetDict[family]
+        dirname = os.path.dirname(self.file).split('/')[-1]
+        box2read = None if resize2shape else box
+
+        # 1. read input file
+        data, meta = readfile.read(self.file,
+                                   datasetName=family,
+                                   box=box2read,
+                                   xstep=1,
+                                   ystep=1)
+
+        # 2. resize
+        if resize2shape:
+            # link: https://scikit-image.org/docs/dev/api/skimage.transform.html#skimage.transform.resize
+            data = resize(data,
+                          output_shape=resize2shape,
+                          order=1,
+                          mode='constant',
+                          anti_aliasing=True,
+                          preserve_range=True)
+
+            # 3. subset by box
+            if box:
+                data = data[box[1]:box[3],
+                            box[0]:box[2]]
+
+        # 4. multilook
+        if xstep * ystep > 1:
+            if mli_method == 'nearest':
+                # multilook - nearest resampling
+                # output data size
+                xsize = int(data.shape[1] / xstep)
+                ysize = int(data.shape[0] / ystep)
+                # sampling
+                data = data[int(ystep/2)::ystep,
+                            int(xstep/2)::xstep]
+                data = data[:ysize, :xsize]
+
+            else:
+                # multilook - mean or median resampling
+                data = multilook_data(data,
+                                      lks_y=ystep,
+                                      lks_x=xstep,
+                                      method=mli_method)
+
+        # 5. check the input unit
+        if self.data_unit:
+            if   self.data_unit ==  'm':    data *= 1e0
+            elif self.data_unit == 'cm':    data *= 1e-2
+            elif self.data_unit == 'mm':    data *= 1e-3
+            elif self.data_unit == 'radian':
+                if dirname in ['ion_dates', 'ion_burst_ramp_merged_dates']:
+                    phase2range = 1 * float(meta['WAVELENGTH']) / (4.*np.pi)
+                else:
+                    phase2range = -1 * float(meta['WAVELENGTH']) / (4.*np.pi)
+                data *= phase2range
+
+        return data, meta
+
+    def get_size(self, family=TIMESERIES_DSET_NAMES[0]):
+        self.file = self.datasetDict[family]
+        metadata = readfile.read_attribute(self.file)
+        length = int(metadata['LENGTH'])
+        width = int(metadata['WIDTH'])
+        return length, width
+
+    def get_perp_baseline(self, family=TIMESERIES_DSET_NAMES[0]):
+        self.file = self.datasetDict[family]
+        metadata = readfile.read_attribute(self.file)
+        self.bperp_top = float(metadata['P_BASELINE_TOP_HDR'])
+        self.bperp_bottom = float(metadata['P_BASELINE_BOTTOM_HDR'])
+        self.bperp = (self.bperp_top + self.bperp_bottom) / 2.0
+        return self.bperp
+
+    def get_metadata(self, family=TIMESERIES_DSET_NAMES[0]):
+        self.file = self.datasetDict[family]
+        self.metadata = readfile.read_attribute(self.file)
+        self.length = int(self.metadata['LENGTH'])
+        self.width = int(self.metadata['WIDTH'])
+        self.metadata['UNIT'] = 'm'
+
+        if self.track:
+            self.metadata['TRACK'] = self.track
+
+        if self.platform:
+            self.metadata['PLATFORM'] = self.platform
+
+        return self.metadata
+
+
+    def get_dataset_list(self):
+        self.datasetList = list(self.datasetDict.keys())
+        return self.datasetList
 
 
 ########################################################################################

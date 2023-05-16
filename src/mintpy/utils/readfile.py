@@ -585,7 +585,7 @@ def read_binary_file(fname, datasetName=None, box=None, xstep=1, ystep=1):
     if datasetName:
         if datasetName.startswith(('mag', 'amp')):
             cpx_band = 'magnitude'
-        elif datasetName in ['phase', 'angle']:
+        elif any(x in datasetName.lower() for x in ['phase', 'angle']):
             cpx_band = 'phase'
         elif datasetName.lower() == 'real':
             cpx_band = 'real'
@@ -771,7 +771,7 @@ def get_slice_list(fname, no_complex=False):
         with h5py.File(fname, 'r') as f:
             d1_list = [i for i in f.keys() if isinstance(f[i], h5py.Dataset)]
 
-        if ftype == 'timeseries' and ftype in d1_list:
+        if ftype == 'timeseries' and any(x.startswith(ftype) for x in d1_list):
             obj = timeseries(fname)
             obj.open(print_msg=False)
             slice_list = obj.sliceList

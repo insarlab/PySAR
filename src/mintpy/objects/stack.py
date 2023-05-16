@@ -39,6 +39,8 @@ TIMESERIES_DSET_NAMES = [
     'raw',
     'troposphericDelay',
     'topographicResidual',
+    'ionosphericDelay',
+    'ionosphericBurstRamp',
     'ramp',
     'displacement',
 ]

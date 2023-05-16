@@ -16,11 +16,18 @@ from mintpy.defaults import auto_path
 from mintpy.objects import (
     GEOMETRY_DSET_NAMES,
     IFGRAM_DSET_NAMES,
+    TIMESERIES_DSET_NAMES,
     geometry,
     ifgramStack,
     sensor,
 )
-from mintpy.objects.stackDict import geometryDict, ifgramDict, ifgramStackDict
+from mintpy.objects.stackDict import (
+    geometryDict,
+    ifgramDict,
+    ifgramStackDict,
+    timeseriesAcqDict,
+    timeseriesDict,
+)
 from mintpy.utils import ptime, readfile, utils as ut
 
 #################################################################
@@ -38,9 +45,8 @@ IFG_DSET_NAME2TEMPLATE_KEY = {
 }
 
 ION_DSET_NAME2TEMPLATE_KEY = {
-    'unwrapPhase'     : 'mintpy.load.ionUnwFile',
-    'coherence'       : 'mintpy.load.ionCorFile',
-    'connectComponent': 'mintpy.load.ionConnCompFile',
+    'ionosphericDelay'     : 'mintpy.load.ionFile',
+    'ionosphericBurstRamp' : 'mintpy.load.ionBurstRampFile',
 }
 
 OFF_DSET_NAME2TEMPLATE_KEY = {
@@ -314,13 +320,11 @@ def read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2template_key):
                 ds_name2template_key - dict, to relate the HDF5 dataset name to the template key
     Returns:    stackObj             - ifgramStackDict object or None
     """
-    if iDict['only_load_geometry']:
+    if not iDict['load_ifg']:
         return None
 
     if 'mintpy.load.unwFile' in ds_name2template_key.values():
         obs_type = 'interferogram'
-    elif 'mintpy.load.ionUnwFile' in ds_name2template_key.values():
-        obs_type = 'ionosphere'
     elif 'mintpy.load.azOffFile' in ds_name2template_key.values():
         obs_type = 'offset'
 
@@ -435,6 +439,121 @@ def read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2template_key):
     return stackObj
 
 
+def read_inps_dict2timeseries_dict_object(iDict, ds_name2tmpl_opt):
+    """Read input arguments into timeseriesDict object(s).
+
+    Parameters: iDict                - dict, input arguments from command line & template file
+                ds_name2template_key - dict, to relate the HDF5 dataset name to the template key
+    Returns:    timeseriesObj        - timeseriesDict object or None
+    """
+    if not iDict['load_ion']:
+        return None
+
+    if 'mintpy.load.unwFile' in ds_name2tmpl_opt.values():
+        obs_type = 'interferogram'
+    elif 'mintpy.load.ionFile' in ds_name2tmpl_opt.values():
+        obs_type = 'ionosphere'
+    elif 'mintpy.load.ionBurstRampFile' in ds_name2tmpl_opt.values():
+        obs_type = 'ionosphere burst ramp'
+    elif 'mintpy.load.azOffFile' in ds_name2tmpl_opt.values():
+        obs_type = 'offset'
+
+    # iDict --> dsPathDict
+    print('-'*50)
+    print(f'searching {obs_type} pairs info')
+    print('input data files:')
+    max_digit = max(len(i) for i in list(ds_name2tmpl_opt.keys()))
+    dsPathDict = {}
+    for dsName in [i for i in TIMESERIES_DSET_NAMES if i in ds_name2tmpl_opt.keys()]:
+        key = ds_name2tmpl_opt[dsName]
+        if key in iDict.keys():
+            files = sorted(glob.glob(str(iDict[key])))
+            if len(files) > 0:
+                dsPathDict[dsName] = files
+                print(f'{dsName:<{max_digit}}: {iDict[key]}')
+
+    # Check 1: required dataset
+    dsName0s = [x for x in TIMESERIES_DSET_NAMES if x in ds_name2tmpl_opt.keys()]
+    dsName0 = [i for i in dsName0s if i in dsPathDict.keys()]
+    if len(dsName0) == 0:
+        print(f'WARNING: No data files found for the required dataset: {dsName0s}! Skip loading for {obs_type} stack.')
+        return None
+    else:
+        dsName0 = dsName0[0]
+
+    # Check 2: data dimension for unwrapPhase files
+    dsPathDict = skip_files_with_inconsistent_size(
+        dsPathDict=dsPathDict,
+        pix_box=iDict['box'],
+        dsName=dsName0)
+
+
+
+    # extra metadata from observations
+    # e.g. EARTH_RADIUS, HEIGHT, etc.
+    obsMetaGeo = None
+    obsMetaRadar = None
+
+    for obsName in TIMESERIES_DSET_NAMES:
+        if obsName in ds_name2tmpl_opt.keys():
+            print(obsName)
+            obsFiles = sorted(glob.glob(iDict[ds_name2tmpl_opt[obsName]]))
+            if len(obsFiles) > 0:
+                atr = readfile.read_attribute(obsFiles[0])
+                if 'Y_FIRST' in atr.keys():
+                    obsMetaGeo = atr.copy()
+                else:
+                    obsMetaRadar = atr.copy()
+                break
+
+
+    # Check 3: number of files for all dataset types
+    # dsPathDict --> dsNumDict
+    dsNumDict = {}
+    for key in dsPathDict.keys():
+        num_file = len(dsPathDict[key])
+        dsNumDict[key] = num_file
+        print(f'number of {key:<{max_digit}}: {num_file}')
+
+    dsNumList = list(dsNumDict.values())
+    if any(i != dsNumList[0] for i in dsNumList):
+        msg = 'WARNING: NOT all types of dataset have the same number of files.'
+        msg += ' -> skip interferograms with missing files and continue.'
+        print(msg)
+        raise Exception(msg)
+
+    # dsPathDict --> pairsDict --> tsObj
+    dsNameList = list(dsPathDict.keys())
+
+
+
+    #####################################
+
+    datesDict = {}
+    for i, dsPath0 in enumerate(dsPathDict[dsName0]):
+        date8s = os.path.basename(dsPath0).split('.')[0]
+
+        tsPathDict = {}
+        for dsName in dsNameList:
+            # search the matching data file for the given date12
+            dsPath1 = dsPathDict[dsName][i]
+            if date8s in dsPath1:
+                tsPathDict[dsName] = dsPath1
+
+
+        # initiate timeseriesAcqDict object
+        acqObj = timeseriesAcqDict(datasetDict=tsPathDict, metadata={'data_unit': 'radian'})
+
+        # update datesDict object
+        datesDict[date8s] = acqObj
+
+    if len(datesDict) > 0:
+        tsObj = timeseriesDict(datesDict=datesDict, dsName0=dsName0)
+    else:
+        tsObj = None
+    return tsObj
+
+
 def read_inps_dict2geometry_dict_object(iDict, dset_name2template_key):
     """Read input arguments into geometryDict object(s).
 
@@ -442,6 +561,8 @@ def read_inps_dict2geometry_dict_object(iDict, dset_name2template_key):
     Returns:    geomGeoObj   - geometryDict object in geo   coordinates or None
                 geomRadarObj - geometryDict object in radar coordinates or None
     """
+    if not iDict['load_geom']:
+        return None
 
     # eliminate lookup table dsName for input files in radar-coordinates
     if iDict['processor'] in ['isce', 'doris']:
@@ -681,7 +802,8 @@ def prepare_metadata(iDict):
         # --dset-dir / --file-pattern
         obs_keys = [
             'mintpy.load.unwFile',
-            'mintpy.load.ionUnwFile',
+            'mintpy.load.ionFile',
+            'mintpy.load.ionBurstRampFile',
             'mintpy.load.rgOffFile',
             'mintpy.load.azOffFile',
         ]
@@ -827,7 +949,12 @@ def load_data(inps):
     # read subset info [need the metadata from above]
     iDict = read_subset_box(iDict)
 
-    # geometry in geo / radar coordinates
+    # read specific datasets
+    iDict['load_ifg']=True   if 'ifg'  in iDict['listDset']   else False
+    iDict['load_geom']=True  if 'geom' in iDict['listDset']   else False
+    iDict['load_ion']=True   if 'ion'  in iDict['listDset']   else False
+
+    # 3. geometry in geo / radar coordinates
     geom_dset_name2template_key = {
         **GEOM_DSET_NAME2TEMPLATE_KEY,
         **IFG_DSET_NAME2TEMPLATE_KEY,
@@ -856,29 +983,61 @@ def load_data(inps):
             compression='lzf',
             extra_metadata=extraDict)
 
-    # observations: ifgram, ion or offset
+    # 4. observations: ifgram or offset
     # loop over obs stacks
     stack_ds_name2tmpl_key_list = [
         IFG_DSET_NAME2TEMPLATE_KEY,
-        ION_DSET_NAME2TEMPLATE_KEY,
         OFF_DSET_NAME2TEMPLATE_KEY,
     ]
-    stack_files = ['ifgramStack.h5', 'ionStack.h5', 'offsetStack.h5']
+    stack_files = ['ifgramStack.h5', 'offsetStack.h5']
     stack_files = [os.path.abspath(os.path.join('./inputs', x)) for x in stack_files]
     for ds_name2tmpl_opt, stack_file in zip(stack_ds_name2tmpl_key_list, stack_files):
 
         # initiate dict objects
         stack_obj = read_inps_dict2ifgram_stack_dict_object(iDict, ds_name2tmpl_opt)
 
-        # use geom_obj as size reference while loading ionosphere
         geom_obj = None
-        if os.path.basename(stack_file).startswith('ion'):
-            geom_obj = geom_geo_obj if iDict['geocoded'] else geom_radar_obj
 
         # write dict objects to HDF5 files
         if run_or_skip(stack_file, stack_obj, iDict['box'], geom_obj=geom_obj, **kwargs) == 'run':
             stack_obj.write2hdf5(
                 outputFile=stack_file,
+                access_mode='w',
+                box=iDict['box'],
+                xstep=iDict['xstep'],
+                ystep=iDict['ystep'],
+                mli_method=iDict['method'],
+                compression=iDict['compression'],
+                extra_metadata=extraDict,
+                geom_obj=geom_obj)
+
+
+    # 5. observations: ionosphericDelay, ionosphericBurstRamp
+    # loop over obs of timeseries
+    stack_ds_name2tmpl_key_list = [
+        {k: v} for k, v in ION_DSET_NAME2TEMPLATE_KEY.items()
+    ]
+    ts_files = ['ion.h5', 'ionBurstRamp.h5']
+    ts_files = [os.path.abspath(os.path.join('./inputs', x)) for x in ts_files]
+    for (ds_name2tmpl_opt, ts_file) in zip(stack_ds_name2tmpl_key_list, ts_files):
+        # rename the object key to timeseries
+        for k in ION_DSET_NAME2TEMPLATE_KEY.keys():
+            if k in ds_name2tmpl_opt:
+                ds_name2tmpl_opt[TIMESERIES_DSET_NAMES[0]] = ds_name2tmpl_opt[k]
+                del ds_name2tmpl_opt[k]
+
+        # initiate dict objects (a new func getting timeseries_obj)
+        ts_obj = read_inps_dict2timeseries_dict_object(iDict, ds_name2tmpl_opt)
+
+        # use geom_obj as size reference while loading ionosphere
+        geom_obj = None
+        if os.path.basename(ts_file).startswith('ion'):
+            geom_obj = geom_geo_obj if iDict['geocoded'] else geom_radar_obj
+
+        # write dict objects to HDF5 files
+        if run_or_skip(ts_file, ts_obj, iDict['box'], geom_obj=geom_obj, **kwargs) == 'run':
+            ts_obj.write2hdf5(
+                outputFile=ts_file,
                 access_mode='w',
                 box=iDict['box'],
                 xstep=iDict['xstep'],
