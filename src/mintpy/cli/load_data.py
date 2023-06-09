@@ -49,7 +49,11 @@ EXAMPLE = """example:
 
   # load geometry ONLY
   smallbaselineApp.py SaltonSeaSenDT173.txt -g
-  load_data.py -t smallbaselineApp.cfg --geom
+  load_data.py -t smallbaselineApp.cfg -l geom
+
+  # load ionoshpere time series ONLY
+  smallbaselineApp.py SaltonSeaSenDT173.txt -g
+  load_data.py -t smallbaselineApp.cfg -l ion
 """
 
 
