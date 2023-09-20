@@ -487,26 +487,6 @@ def read_inps_dict2timeseries_dict_object(iDict, ds_name2tmpl_opt):
         pix_box=iDict['box'],
         dsName=dsName0)
 
-
-
-    # extra metadata from observations
-    # e.g. EARTH_RADIUS, HEIGHT, etc.
-    obsMetaGeo = None
-    obsMetaRadar = None
-
-    for obsName in TIMESERIES_DSET_NAMES:
-        if obsName in ds_name2tmpl_opt.keys():
-            print(obsName)
-            obsFiles = sorted(glob.glob(iDict[ds_name2tmpl_opt[obsName]]))
-            if len(obsFiles) > 0:
-                atr = readfile.read_attribute(obsFiles[0])
-                if 'Y_FIRST' in atr.keys():
-                    obsMetaGeo = atr.copy()
-                else:
-                    obsMetaRadar = atr.copy()
-                break
-
-
     # Check 3: number of files for all dataset types
     # dsPathDict --> dsNumDict
     dsNumDict = {}
