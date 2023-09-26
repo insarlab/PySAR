@@ -930,8 +930,8 @@ def load_data(inps):
     iDict = read_subset_box(iDict)
 
     # read specific datasets
+    iDict['load_geom']=True
     iDict['load_ifg']=True   if 'ifg'  in iDict['listDset']   else False
-    iDict['load_geom']=True  if 'geom' in iDict['listDset']   else False
     iDict['load_ion']=True   if 'ion'  in iDict['listDset']   else False
 
     # 3. geometry in geo / radar coordinates
