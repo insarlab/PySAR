@@ -5,6 +5,7 @@
 ############################################################
 
 
+import datetime as dt
 import os
 import time
 
@@ -296,56 +297,48 @@ def write_geometry(outfile, demFile, incAngleFile, azAngleFile=None, waterMaskFi
             # write
             f['waterMask'][:,:] = water_mask
 
-    print(f'finished writing to HD5 file: {outfile}')
+    print(f'finished writing to HD5 file: {outfile}\n')
     return outfile
 
 
-def write_ifgram_stack(outfile, unwStack, cohStack, connCompStack, ampStack=None,
-                       box=None, xstep=1, ystep=1, mli_method='nearest'):
-    """Write ifgramStack HDF5 file from stack VRT files
+def write_ifgram_stack(outfile, stackFiles, box=None, xstep=1, ystep=1, mli_method='nearest'):
+    """Write stacks to HDF5 files from stack VRT files
     """
 
     print('-'*50)
-    stackFiles = [unwStack, cohStack, connCompStack, ampStack]
-    max_digit = max(len(os.path.basename(str(i))) for i in stackFiles)
-    for stackFile in stackFiles:
+
+    # remove None entries
+    stackFiles = {key:val for key, val in stackFiles.items() if val is not None}
+
+    # check all files exist
+    for dsName, fname in stackFiles.items():
+        if not os.path.exists(fname):
+            raise Exception("%s does not exist" % fname)
+
+    # determine field length for printing
+    max_digit = max(len(os.path.basename(str(i))) for i in stackFiles.values())
+    for stackFile in stackFiles.values():
         if stackFile is not None:
             print('open {f:<{w}} with gdal ...'.format(f=os.path.basename(stackFile), w=max_digit))
 
-    dsUnw = gdal.Open(unwStack, gdal.GA_ReadOnly)
-    dsCoh = gdal.Open(cohStack, gdal.GA_ReadOnly)
-    dsComp = gdal.Open(connCompStack, gdal.GA_ReadOnly)
-    if ampStack is not None:
-        dsAmp = gdal.Open(ampStack, gdal.GA_ReadOnly)
-    else:
-        dsAmp = None
+    # extract NoDataValue for each stack (from the last */date2_date1.vrt file for example)
+    noDataValues = {}
+    for dsName in stackFiles.keys():
+        dsStack = gdal.Open(stackFiles[dsName], gdal.GA_ReadOnly)
+        ds = gdal.Open(dsStack.GetFileList()[-1], gdal.GA_ReadOnly)
+        noDataValues[dsName] = ds.GetRasterBand(1).GetNoDataValue()
 
-    # extract NoDataValue (from the last */date2_date1.vrt file for example)
-    ds = gdal.Open(dsUnw.GetFileList()[-1], gdal.GA_ReadOnly)
-    noDataValueUnw = ds.GetRasterBand(1).GetNoDataValue()
-    print(f'grab NoDataValue for unwrapPhase     : {noDataValueUnw:<5} and convert to 0.')
-
-    ds = gdal.Open(dsCoh.GetFileList()[-1], gdal.GA_ReadOnly)
-    noDataValueCoh = ds.GetRasterBand(1).GetNoDataValue()
-    print(f'grab NoDataValue for coherence       : {noDataValueCoh:<5} and convert to 0.')
-
-    ds = gdal.Open(dsComp.GetFileList()[-1], gdal.GA_ReadOnly)
-    noDataValueComp = ds.GetRasterBand(1).GetNoDataValue()
-    print(f'grab NoDataValue for connectComponent: {noDataValueComp:<5} and convert to 0.')
-    ds = None
-
-    if dsAmp is not None:
-        ds = gdal.Open(dsAmp.GetFileList()[-1], gdal.GA_ReadOnly)
-        noDataValueAmp = ds.GetRasterBand(1).GetNoDataValue()
-        print(f'grab NoDataValue for magnitude       : {noDataValueAmp:<5} and convert to 0.')
+        fileName = os.path.basename(stackFiles[dsName])
+        print(f'grab NoDataValue for {fileName:<{max_digit}}: '
+              f'{noDataValues[dsName]:<5} and convert to 0.')
         ds = None
 
     # sort the order of interferograms based on date1_date2 with date1 < date2
-    nPairs = dsUnw.RasterCount
+    nPairs = dsStack.RasterCount
     d12BandDict = {}
     for ii in range(nPairs):
-        bnd = dsUnw.GetRasterBand(ii+1)
-        d12 = bnd.GetMetadata("unwrappedPhase")["Dates"]
+        bnd = dsStack.GetRasterBand(ii+1)
+        d12 = bnd.GetMetadata(bnd.GetMetadataDomainList()[0])["Dates"]
         d12 = sorted(d12.split("_"))
         d12 = f'{d12[0]}_{d12[1]}'
         d12BandDict[d12] = ii+1
@@ -363,14 +356,9 @@ def write_ifgram_stack(outfile, unwStack, cohStack, connCompStack, ampStack=None
     else:
         kwargs = dict()
 
-    if xstep * ystep > 1:
-        msg = f'apply {xstep} x {ystep} multilooking/downsampling via {mli_method} to: unwrapPhase, coherence'
-        msg += ', magnitude' if dsAmp is not None else ''
-        msg += f'\napply {xstep} x {ystep} multilooking/downsampling via nearest to: connectComponent'
-        print(msg)
+    # write to HDF5 file
     print(f'writing data to HDF5 file {outfile} with a mode ...')
     with h5py.File(outfile, "a") as f:
-
         prog_bar = ptime.progressBar(maxValue=nPairs)
         for ii in range(nPairs):
             d12 = d12List[ii]
@@ -381,49 +369,180 @@ def write_ifgram_stack(outfile, unwStack, cohStack, connCompStack, ampStack=None
             f["date"][ii,1] = d12.split("_")[1].encode("utf-8")
             f["dropIfgram"][ii] = True
 
-            bnd = dsUnw.GetRasterBand(bndIdx)
-            data = bnd.ReadAsArray(**kwargs)
-            data = multilook_data(data, ystep, xstep, method=mli_method)
-            data[data == noDataValueUnw] = 0      #assign pixel with no-data to 0
-            data *= -1.0                          #date2_date1 -> date1_date2
-            f["unwrapPhase"][ii,:,:] = data
-
-            bperp = float(bnd.GetMetadata("unwrappedPhase")["perpendicularBaseline"])
-            bperp *= -1.0                         #date2_date1 -> date1_date2
-            f["bperp"][ii] = bperp
-
-            bnd = dsCoh.GetRasterBand(bndIdx)
-            data = bnd.ReadAsArray(**kwargs)
-            data = multilook_data(data, ystep, xstep, method=mli_method)
-            data[data == noDataValueCoh] = 0      #assign pixel with no-data to 0
-            f["coherence"][ii,:,:] = data
-
-            bnd = dsComp.GetRasterBand(bndIdx)
-            data = bnd.ReadAsArray(**kwargs)
-            data = multilook_data(data, ystep, xstep, method='nearest')
-            data[data == noDataValueComp] = 0     #assign pixel with no-data to 0
-            f["connectComponent"][ii,:,:] = data
-
-            if dsAmp is not None:
-                bnd = dsAmp.GetRasterBand(bndIdx)
+            # loop through stacks
+            print(stackFiles.keys())
+            for dsName in stackFiles.keys():
+                dsStack = gdal.Open(stackFiles[dsName], gdal.GA_ReadOnly)
+                bnd = dsStack.GetRasterBand(bndIdx)
                 data = bnd.ReadAsArray(**kwargs)
-                data = multilook_data(data, ystep, xstep, method=mli_method)
-                data[data == noDataValueAmp] = 0  #assign pixel with no-data to 0
-                f["magnitude"][ii,:,:] = data
+                if xstep * ystep > 1:
+                    mli_method_spec = mli_method if dsName not in \
+                        ['connCompStack'] else 'nearest'
+                    print(f'apply {xstep} x {ystep} multilooking/downsampling via '
+                          f'{mli_method_spec} to: {dsName}')
+                    data = multilook_data(data, ystep, xstep, method=mli_method_spec)
+                data[data == noDataValues[dsName]] = 0  #assign pixel with no-data to 0
+
+                if dsName == 'unwrapPhase':
+                    data *= -1  # date2_date1 -> date1_date2
+                    f['unwrapPhase'][ii,:,:] = data
+
+                    bperp = float(bnd.GetMetadata("unwrappedPhase")["perpendicularBaseline"])
+                    bperp *= -1.0  # date2_date1 -> date1_date2
+                    f["bperp"][ii] = bperp
+
+                elif dsName == 'coherence':
+                    f["coherence"][ii,:,:] = data
+
+                elif dsName == 'connectComponent':
+                    f["connectComponent"][ii,:,:] = data
+
+                elif dsName == 'magnitude':
+                    f["magnitude"][ii,:,:] = data
+
+                elif dsName == 'ionosphere':
+                    data *= -1.0  #date2_date1 -> date1_date2
+                    f["unwrapPhase"][ii,:,:] = data
+
+                    bperp = float(bnd.GetMetadata("ionosphere")["perpendicularBaseline"])
+                    bperp *= -1.0  #date2_date1 -> date1_date2
+                    f["bperp"][ii] = bperp
 
         prog_bar.close()
 
         # add MODIFICATION_TIME metadata to each 3D dataset
-        for dsName in ['unwrapPhase','coherence','connectComponent']:
+        for dsName in stackFiles.keys():
+            dsName = 'unwrapPhase' if dsName == 'ionosphere' else dsName
             f[dsName].attrs['MODIFICATION_TIME'] = str(time.time())
 
-    print(f'finished writing to HD5 file: {outfile}')
+    print(f'finished writing to HD5 file: {outfile}\n')
     dsUnw = None
     dsCoh = None
     dsComp = None
     dsAmp = None
     return outfile
 
+
+# OPTIONAL - ARIA model-based corrections troposphereTotal, solidearthtides
+def write_timeseries(outfile, corrStack, box=None,
+                      xstep=1, ystep=1, mli_method='nearest'):
+    """Write SET and TropsphericDelay corrections to HDF5 file from stack VRT files
+       Correction layers are stored for each SAR acquisition date
+
+    ARIA_GUNW_NC_PATH:
+    troposhereTotal : models GMAO, HRRR, HRES, ERA5 '/science/grids/corrections/external/troposphere/'
+    solidEarthTides '/science/grids/corrections/derived/solidearthtides/'
+    """
+
+    print('-'*50)
+
+    # determine field length for printing
+    max_digit = len(os.path.basename(str(corrStack)))
+
+    if corrStack is not None:
+        print('open {f:<{w}} with gdal ...'.format(f=os.path.basename(corrStack), w=max_digit))
+
+        # check all files exist
+        if not os.path.exists(corrStack):
+            raise Exception("%s does not exist" % corrStack)
+
+    # open raster
+    dsCor = gdal.Open(corrStack, gdal.GA_ReadOnly)
+    # extract NoDataValue (from the last date.vrt file for example)
+    ds = gdal.Open(dsCor.GetFileList()[-1], gdal.GA_ReadOnly)
+    noDataValue = ds.GetRasterBand(1).GetNoDataValue()
+    ds = None
+
+    # get the layer name (for tropo this will get the model name)
+    layer = dsCor.GetRasterBand(1).GetMetadataDomainList()[0]
+
+    # Get the wavelength. need to convert radians to meters
+    wavelength = np.float64(dsCor.GetRasterBand(1).GetMetadata(layer)["Wavelength (m)"])
+    phase2range = -wavelength / (4.*np.pi)
+
+    # get model dates and time
+    nDate = dsCor.RasterCount
+    dateDict = {}
+    sensingDict = {}
+    for ii in range(nDate):
+        bnd = dsCor.GetRasterBand(ii+1)
+        date = bnd.GetMetadata(layer)["Dates"]
+        utc = dt.datetime.strptime(date + ',' + \
+                                   bnd.GetMetadata(layer)["UTCTime (HH:MM:SS.ss)"],
+                                   "%Y%m%d,%H:%M:%S.%f")
+        dateDict[date] = ii+1
+        sensingDict[ii+1] = str(utc)
+    dateList = sorted(dateDict.keys())
+    print(f'number of {layer} datasets: {len(dateList)}')
+
+    # box to gdal arguments
+    # link: https://gdal.org/python/osgeo.gdal.Band-class.html#ReadAsArray
+    if box is not None:
+        kwargs = dict(
+            xoff=box[0],
+            yoff=box[1],
+            win_xsize=box[2]-box[0],
+            win_ysize=box[3]-box[1])
+    else:
+        kwargs = dict()
+
+    if xstep * ystep > 1:
+        msg = f'apply {xstep} x {ystep} multilooking/downsampling via {mli_method} to {layer}'
+        print(msg)
+
+    print(f'writing data to HDF5 file {outfile} with a mode ...')
+    with h5py.File(outfile, "a") as f:
+        prog_bar = ptime.progressBar(maxValue=nDate)
+        for ii in range(nDate):
+            date = dateList[ii]
+            bndIdx = dateDict[date]
+            utc = sensingDict[bndIdx]
+            prog_bar.update(ii+1, suffix=f'{date} {ii+1}/{nDate}')
+
+            f["date"][ii] = date.encode("utf-8")
+            f["sensingMid"][ii] = utc.encode("utf-8")
+
+            bnd = dsCor.GetRasterBand(bndIdx)
+            data = bnd.ReadAsArray(**kwargs)
+            data = multilook_data(data, ystep, xstep, method=mli_method)
+            data[data == noDataValue] = 0         #assign pixel with no-data to 0
+            data[np.isnan(data)] = 0              #assign nan pixel to 0
+            f["timeseries"][ii,:,:] = data * phase2range
+
+        prog_bar.close()
+
+        # add MODIFICATION_TIME metadata to each 3D dataset
+        for dsName in ['timeseries']:
+            f[dsName].attrs['MODIFICATION_TIME'] = str(time.time())
+
+    print(f'finished writing to HD5 file: {outfile}\n')
+    dsCor = None
+
+    return outfile
+
+
+def get_number_of_epochs(vrtfile):
+    ds = gdal.Open(vrtfile, gdal.GA_ReadOnly)
+
+    return ds.RasterCount
+
+
+def get_correction_layer(correction_filename):
+    ds = gdal.Open(correction_filename, gdal.GA_ReadOnly)
+    # get the layer name (for tropo this will get the model name)
+    layer_name = ds.GetRasterBand(1).GetMetadataDomainList()[0]
+
+    # Get type of correction
+    if layer_name in ['GMAO', 'HRES', 'HRRR', "ERA5"]:
+        layer_type = 'tropo'
+    else:
+        # ionosphere, solid earth tides
+        layer_type = layer_name
+
+    #close
+    ds = None
+
+    return layer_name, layer_type
 
 ####################################################################################
 def load_aria(inps):
@@ -473,13 +592,12 @@ def load_aria(inps):
             compression=inps.compression,
         )
 
-        # write data to h5 file in disk
         write_ifgram_stack(
             inps.outfile[0],
-            unwStack=inps.unwFile,
-            cohStack=inps.corFile,
-            connCompStack=inps.connCompFile,
-            ampStack=inps.magFile,
+            stackFiles={'unwrapPhase': inps.unwFile,
+                         'coherence': inps.corFile,
+                         'connectComponent': inps.connCompFile,
+                         'magnitude': inps.magFile},
             box=box,
             xstep=inps.xstep,
             ystep=inps.ystep,
@@ -520,10 +638,87 @@ def load_aria(inps):
             ystep=inps.ystep,
         )
 
+    ########## output file 3 - correction layers
+
+    # 3.1 - ionosphere
+    if inps.ionoFile:
+        # define correction dataset structure for ifgramStack
+        ds_name_dict = {
+            'date'             : (np.dtype('S8'), (num_pair, 2)),
+            'dropIfgram'       : (np.bool_,       (num_pair,)),
+            'bperp'            : (np.float32,     (num_pair,)),
+            'unwrapPhase'      : (np.float32,     (num_pair, length, width)),
+            "coherence"        : (np.float32,     (num_pair, length, width)),
+        }
+        meta['FILE_TYPE'] = 'ifgramStack'
+
+        layer_name, _ = get_correction_layer(inps.ionoFile)
+
+        if run_or_skip(inps, ds_name_dict, out_file=inps.outfile[0]) == 'run':
+            outname = f'{out_dir}/ionStack.h5'
+
+            writefile.layout_hdf5(
+                outname,
+                ds_name_dict,
+                metadata=meta,
+                compression=inps.compression,
+                )
+
+            # write data to disk
+            write_ifgram_stack(
+                outname,
+                stackFiles={'ionosphere': inps.ionoFile,
+                            'coherence': inps.corFile,},
+                box=box,
+                xstep=inps.xstep,
+                ystep=inps.ystep,
+                mli_method=inps.method,
+            )
+
+    # 3.2 - model based corrections: SolidEarthTides and Troposphere
+    # Loop through other correction layers also provided as epochs
+    # handle multiple tropo stacks (if specified)
+    if inps.tropoFile is None:
+        inps.tropoFile = [None]
+    correction_layers = inps.tropoFile + [inps.setFile]
+    for layer in correction_layers:
+        if layer:
+            # get name and type
+            layer_name, _ = get_correction_layer(layer)
+            num_dates = get_number_of_epochs(layer)
+
+            meta['FILE_TYPE'] = 'timeseries'
+            meta['UNIT'] = 'm'
+            meta['DATA_TYPE'] = 'float32'
+            for key in ['REF_Y', 'REF_X', 'REF_DATE']:
+                if key in meta.keys():
+                    meta.pop(key)
+
+            # define correction dataset structure for timeseries
+            ds_name_dict = {
+            'date'           : (np.dtype('S8'),  (num_dates, )),
+            'sensingMid'     : (np.dtype('S15'), (num_dates, )),
+            'timeseries'     : (np.float32,      (num_dates, length, width)),
+            }
+
+            if run_or_skip(inps, ds_name_dict, out_file=inps.outfile[0]) == 'run':
+                writefile.layout_hdf5(
+                    f'{out_dir}/{layer_name}_ARIA.h5',
+                    ds_name_dict,
+                    metadata=meta,
+                    compression=inps.compression,
+                    )
+
+                # write data to disk
+                write_timeseries(
+                    f'{out_dir}/{layer_name}_ARIA.h5',
+                    corrStack=layer,
+                    box=box,
+                    xstep=inps.xstep,
+                    ystep=inps.ystep,
+                    )
     print('-'*50)
 
     # used time
     m, s = divmod(time.time() - start_time, 60)
     print(f'time used: {m:02.0f} mins {s:02.1f} secs.')
-
-    return
