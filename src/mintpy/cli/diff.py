@@ -20,6 +20,10 @@ EXAMPLE = """example:
   diff.py  timeseries_ERA5_ramp_demErr.h5  ../GIANT/Stack/LS-PARAMS.h5 -o mintpy_giant.h5
   diff.py  reconUnwrapIfgram.h5  ./inputs/ifgramStack.h5  -o diffUnwrapIfgram.h5
 
+  # different resolutions
+  diff.py timeseries.h5 inputs/SET.h5 -o timeseries_SET.h5
+  diff.py timeseries_SET.h5 ion.h5 -o timeseries_SET_ion.h5
+
   # different file types
   diff.py  filt_20220905_20230220.unw  ./inputs/ERA5.h5 -o filt_20220905_20230220_ERA5.unw
   diff.py  timeseries.h5 ./inputs/ITRF14.h5 -o timeseries_ITRF14.h5

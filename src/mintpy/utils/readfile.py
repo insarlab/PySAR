@@ -20,6 +20,7 @@ from typing import Union
 import h5py
 import numpy as np
 from numpy.typing import DTypeLike
+from skimage.transform import resize
 
 from mintpy.objects import (
     DSET_UNIT_DICT,
@@ -317,14 +318,17 @@ def gdal_to_numpy_dtype(gdal_dtype: Union[str, int]) -> np.dtype:
 
 #########################################################################
 def read(fname, box=None, datasetName=None, print_msg=True, xstep=1, ystep=1, data_type=None,
-         no_data_values=None):
+         resize2shape=None, no_data_values=None):
     """Read one dataset and its attributes from input file.
 
     Parameters: fname          - str, path of file to read
                 datasetName    - str or list of str, slice names
                 box            - 4-tuple of int area to read, defined in (x0, y0, x1, y1) in pixel coordinate
+                                 as defined in the (resized) shape.
                 x/ystep        - int, number of pixels to pick/multilook for each output pixel
                 data_type      - numpy data type, e.g. np.float32, np.bool_, etc. Change the output data type
+                resize2shape   - tuple of 2 int, resize the native matrix to the given shape,
+                                 set to None for not resizing
                 no_data_values - list of 2 numbers, change the no-data-value in the output
     Returns:    data           - 2/3/4D matrix in numpy.array format, return None if failed
                 atr            - dictionary, attributes of data, return None if failed
@@ -340,6 +344,7 @@ def read(fname, box=None, datasetName=None, print_msg=True, xstep=1, ystep=1, da
         data, atr = readfile.read('geometryRadar.h5', datasetName='bperp')
         data, atr = readfile.read('100120-110214.unw', box=(100,1100, 500, 2500))
     """
+    vprint = print if print_msg else lambda *args, **kwargs: None
     fname = os.fspath(fname)  # Convert from possible pathlib.Path
     # metadata
     dsname4atr = None   #used to determine UNIT
@@ -349,15 +354,19 @@ def read(fname, box=None, datasetName=None, print_msg=True, xstep=1, ystep=1, da
         dsname4atr = datasetName.split('-')[0]
     atr = read_attribute(fname, datasetName=dsname4atr)
 
-    # box
+    # check: box & resize2shape
     length, width = int(atr['LENGTH']), int(atr['WIDTH'])
+    # ignore resize arg if it is the same as the original shape
+    if resize2shape and resize2shape == (length, width):
+        resize2shape = None
     if not box:
         box = (0, 0, width, length)
+    box2read = (0, 0, width, length) if resize2shape else box
 
     # read data
     kwargs = dict(
         datasetName=datasetName,
-        box=box,
+        box=box2read,
         xstep=xstep,
         ystep=ystep,
     )
@@ -365,20 +374,36 @@ def read(fname, box=None, datasetName=None, print_msg=True, xstep=1, ystep=1, da
     fext = os.path.splitext(os.path.basename(fname))[1].lower()
     if fext in ['.h5', '.he5']:
         data = read_hdf5_file(fname, print_msg=print_msg, **kwargs)
-
     else:
         data, atr = read_binary_file(fname, **kwargs)
 
+    # resize
+    if resize2shape:
+        # link: https://scikit-image.org/docs/dev/api/skimage.transform.html#skimage.transform.resize
+        data = resize(
+            data,
+            output_shape=resize2shape,
+            order=1,
+            mode='constant',
+            anti_aliasing=True,
+            preserve_range=True,
+        )
+
+        # subset by box
+        if tuple(box) != (0, 0, width, length):
+            data = data[
+                box[1]:box[3],
+                box[0]:box[2],
+            ]
+
     # customized output data type
     if data_type is not None and data_type != data.dtype:
-        if print_msg:
-            print(f'convert numpy array from {data.dtype} to {data_type}')
+        vprint(f'convert numpy array from {data.dtype} to {data_type}')
         data = np.array(data, dtype=data_type)
 
     # convert no-data-value
     if isinstance(no_data_values, list):
-        if print_msg:
-            print(f'convert no-data-value from {no_data_values[0]} to {no_data_values[1]}')
+        vprint(f'convert no-data-value from {no_data_values[0]} to {no_data_values[1]}')
         data[data == no_data_values[0]] = no_data_values[1]
 
     return data, atr
