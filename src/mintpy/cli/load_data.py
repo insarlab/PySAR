@@ -39,16 +39,21 @@ EXAMPLE = """example:
 
   # load & write the following HDF5 files:
   # ./inputs/ifgramStack.h5   for interferogram        stack
-  # ./inputs/ionStack.h5      for ionosphere           stack
   # ./inputs/offsetStack.h5   for range/azimuth offset stack
   # ./inputs/geometryRadar.h5 for geometry in radar coordinates
   # ./inputs/geometryGeo.h5   for geometry in geo   coordinates
+  # ./inputs/ion.h5           for smooth ionosphere     time-series (from ISCE topStack)
+  # ./inputs/ionBurstRamp.h5  for ionosphere burst ramp time-series (from ISCE topStack)
   load_data.py -t smallbaselineApp.cfg
   load_data.py -t smallbaselineApp.cfg GalapagosSenDT128.txt --project GalapagosSenDT128
 
   # load geometry ONLY
   smallbaselineApp.py SaltonSeaSenDT173.txt -g
-  load_data.py -t smallbaselineApp.cfg --geom
+  load_data.py -t smallbaselineApp.cfg -l geom
+
+  # load ionoshpere time series ONLY
+  smallbaselineApp.py SaltonSeaSenDT173.txt -g
+  load_data.py -t smallbaselineApp.cfg -l ion
 """
 
 
@@ -67,8 +72,8 @@ def create_parser(subparsers=None):
     # input files
     parser.add_argument('-t', '--template', dest='template_file', type=str, nargs='+',
                         help='template file(s) with path info.')
-    parser.add_argument('--geom','--geometry', dest='only_load_geometry', action='store_true',
-                        help='Load the geometry file(s) ONLY.')
+    parser.add_argument('-l','--listDset', nargs='+', help='a list of datasets to be loadded (default: %(default)s)',
+                        default=['ifg','geom','ion'], choices=['ifg','geom','ion'])
 
     # options from template file name & content
     parser.add_argument('--project', type=str, dest='PROJECT_NAME',

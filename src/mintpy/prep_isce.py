@@ -153,19 +153,28 @@ def prepare_stack(obs_file, metadata=dict(), baseline_dict=dict(), update_mode=T
     print_msg = True if num_file > 5 else False   # do not print progress bar for <=5 files
     prog_bar = ptime.progressBar(maxValue=num_file, print_msg=print_msg)
     for i, isce_file in enumerate(isce_files):
-        # get date1/2
-        date12 = ptime.get_date12_from_path(isce_file)
-        dates = ptime.yyyymmdd(date12.replace('-','_').split('_'))
-        prog_bar.update(i+1, suffix=f'{dates[0]}_{dates[1]} {i+1}/{num_file}')
+        if obs_file.endswith('ion_dates/*.ion') or obs_file.endswith('ion_burst_ramp_merged_dates/*.float'):
+            # get date for timeseries
+            date = ptime.get_date_str_format(isce_file)
+            prog_bar.update(i+1, suffix=f'{date} {i+1}/{num_file}')
+            ts_meta = {**meta}
+            ts_meta.update(readfile.read_attribute(isce_file, metafile_ext='.xml'))
+            out_meta = ts_meta
+        else:
+            # get date1/2
+            date12 = ptime.get_date12_from_path(isce_file)
+            dates = ptime.yyyymmdd(date12.replace('-','_').split('_'))
+            prog_bar.update(i+1, suffix=f'{dates[0]}_{dates[1]} {i+1}/{num_file}')
 
-        # merge metadata from: data.rsc, *.unw.xml and DATE12/P_BASELINE_TOP/BOTTOM_HDR
-        ifg_meta = {**meta}
-        ifg_meta.update(readfile.read_attribute(isce_file, metafile_ext='.xml'))
-        ifg_meta = add_ifgram_metadata(ifg_meta, dates, baseline_dict)
+            # merge metadata from: data.rsc, *.unw.xml and DATE12/P_BASELINE_TOP/BOTTOM_HDR
+            ifg_meta = {**meta}
+            ifg_meta.update(readfile.read_attribute(isce_file, metafile_ext='.xml'))
+            ifg_meta = add_ifgram_metadata(ifg_meta, dates, baseline_dict)
+            out_meta = ifg_meta
 
         # write .rsc file
         rsc_file = isce_file+'.rsc'
-        writefile.write_roipac_rsc(ifg_meta, rsc_file,
+        writefile.write_roipac_rsc(out_meta, rsc_file,
                                    update_mode=update_mode,
                                    print_msg=False)
 
