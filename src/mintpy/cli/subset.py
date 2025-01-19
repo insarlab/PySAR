@@ -20,6 +20,7 @@ mintpy.subset.lalo     = auto    #[31.5:32.5,130.5:131.0 / no], auto for no
 EXAMPLE = """example:
   subset.py inputs/ifgramStack.h5 -y 400  1500 -x 200   600
   subset.py geo_velocity.h5       -l 30.5 30.8 -L 130.3 130.9
+  subset.py velocity.h5   --lat 25.894 25.896  --lon -80.124 -80.122
   subset.py 030405_090801.unw     -t SinabungT495F50AlosA.template
   subset.py demLat*.dem.wgs84 --lat 32.5 33.0 --lon 130.2 130.6 -o srtm1.h5
 
@@ -28,6 +29,7 @@ EXAMPLE = """example:
 
   # multiple files input
   subset.py *velocity*.h5 timeseries*.h5  -y 400 1500  -x 200 600
+  subset.py geometryRadar.h5 slcStack.h5  --lat 25.894 25.896  --lon -80.124 -80.122
 
   # crop to larger area with custom fill value
   subset.py geo_velocity.h5 -l 32.2 33.5  --outfill-nan

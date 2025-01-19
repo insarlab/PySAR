@@ -490,16 +490,20 @@ class coordinate:
         return geo_box
 
 
-    def bbox_geo2radar(self, geo_box, print_msg=False):
+    def bbox_geo2radar(self, geo_box, buf=None, print_msg=False):
         """Calculate bounding box in x/y for file in radar coord, based on input geo box.
         Parameters: geo_box - tuple of 4 float, indicating the UL/LR lon/lat
+                    buf     - buffer [number of pixel]
         Returns:    pix_box - tuple of 4 int, indicating the UL/LR x/y of the bounding box in radar coord
                               for the corresponding lat/lon coverage.
         """
         lat = np.array([geo_box[3], geo_box[3], geo_box[1], geo_box[1]])
         lon = np.array([geo_box[0], geo_box[2], geo_box[0], geo_box[2]])
         y, x, y_res, x_res = self.geo2radar(lat, lon, print_msg=print_msg)
-        buf = 2 * np.max(np.abs([x_res, y_res]))
+
+        if buf is None:
+            buf = 2 * np.max(np.abs([x_res, y_res]))
+
         pix_box = (np.min(x) - buf, np.min(y) - buf,
                    np.max(x) + buf, np.max(y) + buf)
         return pix_box
