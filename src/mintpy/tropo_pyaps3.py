@@ -466,7 +466,22 @@ def check_pyaps_account_config(tropo_model):
 
 
 ###############################################################
+from concurrent.futures import ThreadPoolExecutor
+
+
 def dload_grib_files(grib_files, tropo_model='ERA5', snwe=None):
+    # import pdb; pdb.set_trace()
+    with ThreadPoolExecutor(max_workers=64) as worker:
+        futures = []
+        for grib_file in grib_files:
+            future = worker.submit(dload_grib_files_worker, [grib_file], tropo_model, snwe)
+            futures.append(future)
+        for future in futures:
+            future.result()
+
+    return dload_grib_files_worker(grib_files, tropo_model, snwe)
+
+def dload_grib_files_worker(grib_files, tropo_model='ERA5', snwe=None):
     """Download weather re-analysis grib files using PyAPS
     Parameters: grib_files : list of string of grib files
     Returns:    grib_files : list of string
